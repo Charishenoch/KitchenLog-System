@@ -23,7 +23,7 @@ Homestead.json
 Homestead.yaml
 Thumbs.db
 # AI Agent Files
-.claude_skills/
+.claude/
 mcp.json
 AGENTS.md
 CLAUDE.md
