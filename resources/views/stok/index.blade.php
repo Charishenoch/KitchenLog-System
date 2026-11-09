@@ -1,8 +1,15 @@
 @extends('layouts.app')
 @section('title','Stok Inventaris')
+@push('styles')
+<style>
+.batch-mini { font-size:11px; color:#6b7280; margin-top:3px; }
+.batch-mini span { display:inline-block; background:#f3f4f6; border:1px solid #e5e7eb; border-radius:4px; padding:1px 6px; margin:1px 2px 1px 0; white-space:nowrap; }
+.batch-mini .fifo-first { background:#dbeafe; border-color:#93c5fd; color:#1d4ed8; font-weight:600; }
+</style>
+@endpush
 @section('content')
 <div class="page-hd">
-    <div><h1>Stok Inventaris</h1><p>Pantau sisa stok bahan baku secara real-time.</p></div>
+    <div><h1>Stok Inventaris</h1><p>Pantau sisa stok bahan baku secara real-time, dipisah per batch tanggal masuk (FIFO).</p></div>
     <button onclick="document.getElementById('modalTerima').classList.add('show')" class="btn btn-primary">
         <svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         Catat Penerimaan
@@ -58,19 +65,21 @@
                     <th style="text-align:right">Sisa Bebas</th>
                     <th>Satuan</th>
                     <th>Min.</th>
+                    <th>Batch per Tgl Masuk (FIFO)</th>
                     <th>Kadaluwarsa</th>
                     <th>Status</th>
                 </tr>
             </thead>
             <tbody>
                 @foreach($bahans as $b)
-                @php 
-                    $menipis2 = $b->stok <= $b->batas_minimum; 
-                    $exp = $b->tgl_kadaluarsa && $b->tgl_kadaluarsa->isPast(); 
+                @php
+                    $menipis2 = $b->stok <= $b->batas_minimum;
+                    $exp = $b->tgl_kadaluarsa && $b->tgl_kadaluarsa->isPast();
+                    $batches = $b->penerimaanBahan;
                 @endphp
                 <tr>
                     <td style="font-weight:500;">{{ $b->nama_bahan }}</td>
-                    
+
                     {{-- Stok Fisik --}}
                     <td style="text-align:right;font-weight:600;color:{{ $menipis2?'#dc2626':'#374151' }};">
                         {{ $b->stok }}
@@ -88,15 +97,33 @@
 
                     <td>{{ $b->satuan }}</td>
                     <td>{{ $b->batas_minimum }}</td>
+
+                    {{-- Kolom batch FIFO per tgl masuk --}}
+                    <td>
+                        @if($batches->isEmpty())
+                            <span style="color:#9ca3af;font-size:11px">—</span>
+                        @else
+                        <div class="batch-mini">
+                            @foreach($batches as $idx => $batch)
+                            <span class="{{ $idx===0?'fifo-first':'' }}" title="{{ $idx===0?'Digunakan lebih dulu (FIFO)':'' }}">
+                                {{ \Carbon\Carbon::parse($batch->tgl_masuk)->format('d/m/Y') }}
+                                : {{ $batch->sisa }} {{ $b->satuan }}
+                                @if($idx===0) ★@endif
+                            </span>
+                            @endforeach
+                        </div>
+                        @endif
+                    </td>
+
                     <td style="color:{{ $exp?'#dc2626':'#374151' }};">{{ $b->tgl_kadaluarsa ? $b->tgl_kadaluarsa->format('d/m/Y') : '-' }}</td>
                     <td>
-                        @if($exp) 
+                        @if($exp)
                             <span class="badge badge-red">Kedaluwarsa</span>
                         @elseif($b->sisa_bebas <= 0)
                             <span class="badge badge-red">Habis Ter-booking</span>
-                        @elseif($menipis2) 
+                        @elseif($menipis2)
                             <span class="badge badge-orange">Menipis</span>
-                        @else 
+                        @else
                             <span class="badge badge-green">Aman</span>
                         @endif
                     </td>

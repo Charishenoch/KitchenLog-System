@@ -14,7 +14,12 @@ class StokController extends Controller
      */
         public function index(Request $request)
     {
-        $query = BahanBaku::query();
+        $query = BahanBaku::with([
+            // Eager-load batch aktif (sisa > 0) urut FIFO untuk ditampilkan di kolom batch
+            'penerimaanBahan' => function ($q) {
+                $q->where('sisa', '>', 0)->orderBy('tgl_masuk', 'asc')->orderBy('id', 'asc');
+            }
+        ]);
 
         if ($request->search) {
             $query->where('nama_bahan', 'like', '%' . $request->search . '%');

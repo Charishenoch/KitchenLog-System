@@ -62,7 +62,12 @@ class DapurController extends Controller
         $search = $request->get('search', '');
         $filter = $request->get('filter', 'semua');
 
-        $query = BahanBaku::query();
+        $query = BahanBaku::with([
+            // Eager-load batch penerimaan yg masih ada sisa, urut FIFO (tgl_masuk asc)
+            'penerimaanBahan' => function ($q) {
+                $q->where('sisa', '>', 0)->orderBy('tgl_masuk', 'asc')->orderBy('id', 'asc');
+            }
+        ]);
         if ($search) $query->where('nama_bahan', 'like', "%{$search}%");
         if ($filter === 'menipis') $query->whereColumn('stok', '<=', 'batas_minimum');
         elseif ($filter === 'aman')   $query->whereColumn('stok', '>', 'batas_minimum');
@@ -156,9 +161,10 @@ class DapurController extends Controller
         }
 
         $request->validate([
-            'bahan_baku_id' => 'required|exists:bahan_baku,id',
-            'jumlah'        => 'required|numeric|min:0.01',
-            'alasan'        => 'required|string|max:255',
+            'bahan_baku_id'      => 'required|exists:bahan_baku,id',
+            'jumlah'             => 'required|numeric|min:0.01',
+            'alasan'             => 'required|string|max:255',
+            'penerimaan_bahan_id'=> 'nullable|exists:penerimaan_bahan,id',
         ], [
             'bahan_baku_id.required' => 'Pilih bahan baku.',
             'jumlah.required'        => 'Jumlah harus diisi.',
@@ -182,18 +188,54 @@ class DapurController extends Controller
                 'staf_id'       => auth()->id(),
             ]);
 
-            // Kurangi stok (FIFO: kurangi dari batch terlama dulu via penerimaan)
             $sisa = $request->jumlah;
-            $batches = PenerimaanBahan::where('bahan_baku_id', $bahan->id)
-                ->where('sisa', '>', 0)
-                ->orderBy('tgl_masuk', 'asc')
-                ->get();
 
-            foreach ($batches as $batch) {
-                if ($sisa <= 0) break;
-                $kurang = min($batch->sisa, $sisa);
-                $batch->decrement('sisa', $kurang);
-                $sisa -= $kurang;
+            if ($request->penerimaan_bahan_id) {
+                // ── Mode: Potong dari batch SPESIFIK yang dipilih user ──────
+                $batch = PenerimaanBahan::where('id', $request->penerimaan_bahan_id)
+                    ->where('bahan_baku_id', $bahan->id)
+                    ->first();
+
+                if ($batch) {
+                    if ($sisa <= $batch->sisa) {
+                        // Jumlah limbah muat dalam satu batch ini
+                        $batch->decrement('sisa', $sisa);
+                        $sisa = 0;
+                    } else {
+                        // Jumlah limbah melebihi sisa batch ini → potong habis batch ini,
+                        // sisanya limpahkan ke batch FIFO (terlama berikutnya)
+                        $lebih = $sisa - $batch->sisa;
+                        $batch->update(['sisa' => 0]);
+                        $sisa = $lebih;
+
+                        // Limpahkan sisa ke batch FIFO (kecuali batch yang sudah dipotong)
+                        $batches = PenerimaanBahan::where('bahan_baku_id', $bahan->id)
+                            ->where('id', '!=', $batch->id)
+                            ->where('sisa', '>', 0)
+                            ->orderBy('tgl_masuk', 'asc')
+                            ->get();
+
+                        foreach ($batches as $b) {
+                            if ($sisa <= 0) break;
+                            $kurang = min($b->sisa, $sisa);
+                            $b->decrement('sisa', $kurang);
+                            $sisa -= $kurang;
+                        }
+                    }
+                }
+            } else {
+                // ── Mode: Potong FIFO (batch terlama dulu) — default ────────
+                $batches = PenerimaanBahan::where('bahan_baku_id', $bahan->id)
+                    ->where('sisa', '>', 0)
+                    ->orderBy('tgl_masuk', 'asc')
+                    ->get();
+
+                foreach ($batches as $batch) {
+                    if ($sisa <= 0) break;
+                    $kurang = min($batch->sisa, $sisa);
+                    $batch->decrement('sisa', $kurang);
+                    $sisa -= $kurang;
+                }
             }
 
             // Update stok bahan baku
@@ -216,6 +258,18 @@ class DapurController extends Controller
         });
 
         return back()->with('success', "Limbah {$request->jumlah} {$bahan->satuan} {$bahan->nama_bahan} berhasil dicatat. Stok dikurangi otomatis.");
+    }
+
+    /* ── API: Ambil batch aktif per bahan (untuk dropdown form limbah) ──────── */
+    public function getBatch(int $bahanId)
+    {
+        $batches = PenerimaanBahan::where('bahan_baku_id', $bahanId)
+            ->where('sisa', '>', 0)
+            ->orderBy('tgl_masuk', 'asc')
+            ->orderBy('id', 'asc')
+            ->get(['id', 'tgl_masuk', 'sisa', 'tgl_kadaluarsa']);
+
+        return response()->json($batches);
     }
 
     /* ── Notifikasi ─────────────────────────────────────────────────────────── */

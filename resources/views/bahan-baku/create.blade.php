@@ -34,8 +34,9 @@
                     <input type="number" name="harga" value="{{ old('harga') }}" class="form-control" min="0" placeholder="0">
                 </div>
                 <div class="form-group">
-                    <label>Tanggal Masuk</label>
+                    <label>Tanggal Masuk Batch Awal</label>
                     <input type="date" name="tgl_masuk" value="{{ old('tgl_masuk', today()->format('Y-m-d')) }}" class="form-control">
+                    <span class="form-hint">Tanggal batch stok awal masuk (untuk tracking FIFO)</span>
                 </div>
                 <div class="form-group">
                     <label>Tanggal Kedaluwarsa</label>
