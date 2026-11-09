@@ -53,6 +53,10 @@ Route::middleware('auth')->group(function () {
         Route::put('/resep/{menuId}',      [ResepController::class, 'update'])->name('resep.update');
         Route::delete('/resep/{menuId}',   [ResepController::class, 'destroy'])->name('resep.destroy');
 
+        // Kelola Batch per Bahan — HARUS SEBELUM resource route agar tidak di-intercept
+        Route::put('/bahan-baku/batch/{batchId}',    [BahanBakuController::class, 'updateBatch'])->name('bahan-baku.batch.update');
+        Route::delete('/bahan-baku/batch/{batchId}', [BahanBakuController::class, 'destroyBatch'])->name('bahan-baku.batch.destroy');
+
         // Kelola Bahan Baku
         Route::resource('bahan-baku', BahanBakuController::class)->except(['show']);
 
@@ -101,6 +105,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/penerimaan',              [DapurController::class, 'simpanPenerimaan'])->name('penerimaan.store');
         Route::get('/limbah',                   [DapurController::class, 'limbah'])->name('limbah');
         Route::post('/limbah',                  [DapurController::class, 'simpanLimbah'])->name('limbah.store');
+        Route::get('/limbah/batch/{bahanId}',   [DapurController::class, 'getBatch'])->name('limbah.batch');
         Route::get('/notifikasi',               [DapurController::class, 'notifikasi'])->name('notifikasi');
         Route::post('/notifikasi/{id}/baca',    [DapurController::class, 'bacaNotif'])->name('notifikasi.baca');
         Route::post('/notifikasi/baca-semua',   [DapurController::class, 'bacaSemuaNotif'])->name('notifikasi.baca-semua');

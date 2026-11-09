@@ -14,7 +14,12 @@ class BahanBakuController extends Controller
 {
     public function index(Request $request)
     {
-        $query = BahanBaku::query();
+        $query = BahanBaku::with([
+            // Eager-load batch aktif (sisa > 0) urut FIFO untuk ditampilkan di kolom batch
+            'penerimaanBahan' => function ($q) {
+                $q->where('sisa', '>', 0)->orderBy('tgl_masuk', 'asc')->orderBy('id', 'asc');
+            }
+        ]);
 
         if ($request->search) {
             $query->where('nama_bahan', 'like', '%' . $request->search . '%');
@@ -50,18 +55,37 @@ class BahanBakuController extends Controller
             'tgl_masuk'     => 'nullable|date',
         ]);
 
-        $bahan = BahanBaku::create($request->only('nama_bahan','stok','satuan','batas_minimum','harga','deskripsi','tgl_kadaluarsa','tgl_masuk'));
+        DB::transaction(function () use ($request) {
+            $bahan = BahanBaku::create($request->only(
+                'nama_bahan','stok','satuan','batas_minimum','harga','deskripsi','tgl_kadaluarsa'
+            ));
 
-        // Buat notifikasi jika stok sudah menipis
-        if ($bahan->stok <= $bahan->batas_minimum) {
-            $this->createNotif($bahan);
-        }
+            // Jika ada stok awal, buat batch penerimaan pertama agar FIFO langsung berjalan
+            if ($bahan->stok > 0) {
+                PenerimaanBahan::create([
+                    'bahan_baku_id'  => $bahan->id,
+                    'staf_id'        => auth()->id(),
+                    'jumlah'         => $bahan->stok,
+                    'sisa'           => $bahan->stok,
+                    'tgl_masuk'      => $request->tgl_masuk ?? today(),
+                    'tgl_kadaluarsa' => $request->tgl_kadaluarsa,
+                ]);
+            }
+
+            // Buat notifikasi jika stok sudah menipis
+            if ($bahan->stok <= $bahan->batas_minimum) {
+                $this->createNotif($bahan);
+            }
+        });
 
         return redirect()->route('bahan-baku.index')->with('success', 'Bahan baku berhasil ditambahkan.');
     }
 
     public function edit(BahanBaku $bahanBaku)
     {
+        $bahanBaku->load([
+            'penerimaanBahan' => fn($q) => $q->orderBy('tgl_masuk', 'asc')->orderBy('id', 'asc'),
+        ]);
         return view('bahan-baku.edit', compact('bahanBaku'));
     }
 
@@ -75,10 +99,10 @@ class BahanBakuController extends Controller
             'harga'         => 'nullable|numeric|min:0',
             'deskripsi'     => 'nullable|string',
             'tgl_kadaluarsa'=> 'nullable|date',
-            'tgl_masuk'     => 'nullable|date',
         ]);
 
-        $bahanBaku->update($request->only('nama_bahan','stok','satuan','batas_minimum','harga','deskripsi','tgl_kadaluarsa','tgl_masuk'));
+        // Update master (tgl_masuk TIDAK disimpan di master — tracking per batch ada di penerimaan_bahan)
+        $bahanBaku->update($request->only('nama_bahan','stok','satuan','batas_minimum','harga','deskripsi','tgl_kadaluarsa'));
 
         // Update notifikasi
         if ($bahanBaku->stok <= $bahanBaku->batas_minimum) {
@@ -121,5 +145,58 @@ class BahanBakuController extends Controller
                 'status'        => 'belum_dibaca',
             ]);
         }
+    }
+
+    /* ── Edit Batch Penerimaan (admin) ──────────────────────────────────────── */
+    public function updateBatch(Request $request, int $batchId)
+    {
+        $request->validate([
+            'tgl_masuk'      => 'required|date',
+            'tgl_kadaluarsa' => 'nullable|date',
+            'jumlah'         => 'required|numeric|min:0',
+            'sisa'           => 'required|numeric|min:0',
+        ]);
+
+        $batch = PenerimaanBahan::findOrFail($batchId);
+        $bahan = BahanBaku::findOrFail($batch->bahan_baku_id);
+
+        DB::transaction(function () use ($request, $batch, $bahan) {
+            $selisihJumlah = $request->jumlah - $batch->jumlah;
+            $selisihSisa   = $request->sisa   - $batch->sisa;
+
+            $batch->update([
+                'tgl_masuk'      => $request->tgl_masuk,
+                'tgl_kadaluarsa' => $request->tgl_kadaluarsa,
+                'jumlah'         => $request->jumlah,
+                'sisa'           => $request->sisa,
+            ]);
+
+            // Sinkronisasi stok master bahan baku berdasarkan selisih sisa
+            if ($selisihSisa != 0) {
+                $bahan->increment('stok', $selisihSisa);
+            }
+        });
+
+        return redirect()->route('bahan-baku.index')
+            ->with('success', "Batch {$bahan->nama_bahan} (masuk " . \Carbon\Carbon::parse($request->tgl_masuk)->format('d/m/Y') . ") berhasil diperbarui.");
+    }
+
+    /* ── Hapus Batch Penerimaan (admin) ─────────────────────────────────────── */
+    public function destroyBatch(int $batchId)
+    {
+        $batch = PenerimaanBahan::findOrFail($batchId);
+        $bahan = BahanBaku::findOrFail($batch->bahan_baku_id);
+        $tgl   = \Carbon\Carbon::parse($batch->tgl_masuk)->format('d/m/Y');
+
+        DB::transaction(function () use ($batch, $bahan) {
+            // Kurangi stok master sebesar sisa batch ini
+            if ($batch->sisa > 0) {
+                $bahan->decrement('stok', $batch->sisa);
+            }
+            $batch->delete();
+        });
+
+        return redirect()->route('bahan-baku.index')
+            ->with('success', "Batch {$bahan->nama_bahan} (masuk {$tgl}) berhasil dihapus.");
     }
 }

@@ -346,8 +346,13 @@ class KasirController extends Controller
     /* ── Stok (read-only) ─────────────────────────────────────────────────── */
     public function stok(Request $request)
     {
-        $bahans = BahanBaku::when($request->search, fn($q) => $q->where('nama_bahan','like','%'.$request->search.'%'))
-                            ->orderBy('nama_bahan')->paginate(20)->withQueryString();
+        $bahans = BahanBaku::with([
+            // Eager-load batch aktif (sisa > 0) urut FIFO untuk ditampilkan
+            'penerimaanBahan' => function ($q) {
+                $q->where('sisa', '>', 0)->orderBy('tgl_masuk', 'asc')->orderBy('id', 'asc');
+            }
+        ])->when($request->search, fn($q) => $q->where('nama_bahan','like','%'.$request->search.'%'))
+          ->orderBy('nama_bahan')->paginate(20)->withQueryString();
         $notifCount = Notifikasi::where('status','belum_dibaca')->count();
         return view('kasir.stok', compact('bahans','notifCount'));
     }

@@ -2,7 +2,7 @@
 @section('title','Limbah / Kerusakan')
 @section('content')
 <div class="page-hd">
-    <div><h1>Limbah / Kerusakan</h1><p>Catat bahan yang basi, pecah, tumpah, atau rusak. Stok dikurangi otomatis (FIFO).</p></div>
+    <div><h1>Limbah / Kerusakan</h1><p>Catat bahan yang basi, pecah, tumpah, atau rusak. Stok dikurangi otomatis sesuai batch yang dipilih.</p></div>
     <button class="btn btn-danger" style="background:#dc2626;color:#fff" onclick="openModal('modalLimbah')">
         <svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         Catat Limbah
@@ -80,13 +80,15 @@
             <button class="modal-close" onclick="closeModal('modalLimbah')">×</button>
         </div>
         <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#dc2626">
-            ⚠️ Stok akan dikurangi otomatis sesuai jumlah yang diinput. Sistem menggunakan metode <strong>FIFO</strong> — batch terlama dikurangi lebih dulu.
+            ⚠️ Pilih <strong>batch tanggal masuk</strong> yang bahan-nya rusak/busuk. Jika tidak dipilih, sistem pakai FIFO (batch terlama dulu).
         </div>
         <form method="POST" action="{{ route('dapur.limbah.store') }}">
             @csrf
+
+            {{-- Pilih Bahan --}}
             <div class="form-group">
                 <label class="form-label">Pilih Bahan Baku <span style="color:#dc2626">*</span></label>
-                <select name="bahan_baku_id" id="pilihBahan" class="form-control" required onchange="updateStokInfo(this)">
+                <select name="bahan_baku_id" id="pilihBahan" class="form-control" required onchange="loadBatch(this)">
                     <option value="">— Pilih Bahan —</option>
                     @foreach($bahans as $b)
                         <option value="{{ $b->id }}" data-stok="{{ $b->stok }}" data-satuan="{{ $b->satuan }}" {{ old('bahan_baku_id')==$b->id?'selected':'' }}>
@@ -95,13 +97,35 @@
                     @endforeach
                 </select>
             </div>
+
+            {{-- Info stok --}}
             <div id="stokInfo" style="display:none;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#15803d">
                 Stok tersedia: <strong id="stokValue">0</strong> <span id="satuanValue"></span>
             </div>
+
+            {{-- Pilih Batch -- muncul setelah pilih bahan --}}
+            <div id="batchWrap" class="form-group" style="display:none">
+                <label class="form-label">
+                    Pilih Batch yang Rusak/Busuk
+                    <span style="font-weight:400;color:#9ca3af;font-size:11px"> (opsional — kosongkan untuk FIFO otomatis)</span>
+                </label>
+                <select name="penerimaan_bahan_id" id="pilihBatch" class="form-control">
+                    <option value="">— FIFO Otomatis (batch terlama dipotong duluan) —</option>
+                </select>
+                <div id="batchLoadingMsg" style="display:none;font-size:11px;color:#9ca3af;margin-top:4px">⏳ Memuat batch...</div>
+                <div id="batchEmptyMsg" style="display:none;font-size:11px;color:#ea580c;margin-top:4px">⚠ Tidak ada batch aktif untuk bahan ini.</div>
+            </div>
+
+            {{-- Jumlah --}}
             <div class="form-group">
                 <label class="form-label">Jumlah yang Dibuang <span style="color:#dc2626">*</span></label>
-                <input type="number" name="jumlah" step="0.01" min="0.01" class="form-control" placeholder="Contoh: 2" value="{{ old('jumlah') }}" required>
+                <input type="number" name="jumlah" id="inputJumlah" step="0.01" min="0.01" class="form-control" placeholder="Contoh: 2" value="{{ old('jumlah') }}" required>
+                <div id="batchSisaInfo" style="display:none;font-size:11px;color:#6b7280;margin-top:3px">
+                    Sisa batch ini: <strong id="batchSisaVal">0</strong> <span id="batchSisaSatuan"></span>
+                </div>
             </div>
+
+            {{-- Alasan --}}
             <div class="form-group">
                 <label class="form-label">Alasan Limbah / Kerusakan <span style="color:#dc2626">*</span></label>
                 <select name="alasan" class="form-control" id="pilihAlasan" onchange="toggleAlasanLain(this)" required>
@@ -116,6 +140,7 @@
                 </select>
                 <input type="text" id="alasanLain" name="alasan_lain" class="form-control" style="margin-top:8px;display:none" placeholder="Tuliskan alasan..." value="{{ old('alasan_lain') }}" maxlength="255">
             </div>
+
             <div style="display:flex;gap:10px;margin-top:18px">
                 <button type="button" onclick="closeModal('modalLimbah')" class="btn btn-secondary" style="flex:1">Batal</button>
                 <button type="submit" class="btn" style="flex:1;background:#dc2626;color:#fff">
@@ -129,24 +154,94 @@
 @endsection
 @push('scripts')
 <script>
-function updateStokInfo(sel) {
-    const opt = sel.options[sel.selectedIndex];
-    const stok = opt.dataset.stok;
+// URL base untuk fetch batch
+const batchUrl = '{{ url("dapur/limbah/batch") }}';
+
+function loadBatch(sel) {
+    const opt    = sel.options[sel.selectedIndex];
+    const stok   = opt.dataset.stok;
     const satuan = opt.dataset.satuan;
-    const info = document.getElementById('stokInfo');
-    if (sel.value) {
-        document.getElementById('stokValue').textContent = stok;
-        document.getElementById('satuanValue').textContent = satuan;
-        info.style.display = 'block';
-    } else { info.style.display = 'none'; }
+    const info   = document.getElementById('stokInfo');
+    const wrap   = document.getElementById('batchWrap');
+    const loading= document.getElementById('batchLoadingMsg');
+    const empty  = document.getElementById('batchEmptyMsg');
+    const pilih  = document.getElementById('pilihBatch');
+    const sisaInfo = document.getElementById('batchSisaInfo');
+
+    // Reset
+    sisaInfo.style.display = 'none';
+    document.getElementById('pilihBatch').value = '';
+
+    if (!sel.value) {
+        info.style.display = 'none';
+        wrap.style.display = 'none';
+        return;
+    }
+
+    // Tampil stok info
+    document.getElementById('stokValue').textContent  = stok;
+    document.getElementById('satuanValue').textContent = satuan;
+    info.style.display = 'block';
+
+    // Load batch via AJAX
+    wrap.style.display  = 'block';
+    loading.style.display = 'block';
+    empty.style.display   = 'none';
+
+    // Kosongkan dropdown dulu
+    pilih.innerHTML = '<option value="">— FIFO Otomatis (batch terlama dipotong duluan) —</option>';
+
+    fetch(`${batchUrl}/${sel.value}`)
+        .then(r => r.json())
+        .then(batches => {
+            loading.style.display = 'none';
+            if (!batches.length) {
+                empty.style.display = 'block';
+                return;
+            }
+            batches.forEach((b, idx) => {
+                const tgl  = new Date(b.tgl_masuk).toLocaleDateString('id-ID', {day:'2-digit',month:'short',year:'numeric'});
+                const exp  = b.tgl_kadaluarsa ? ` | Exp: ${new Date(b.tgl_kadaluarsa).toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'})}` : '';
+                const fifo = idx === 0 ? ' ★ FIFO Berikutnya' : '';
+                const opt  = new Option(`${tgl} — Sisa: ${b.sisa} ${satuan}${exp}${fifo}`, b.id);
+                opt.dataset.sisa   = b.sisa;
+                opt.dataset.satuan = satuan;
+                pilih.add(opt);
+            });
+        })
+        .catch(() => { loading.style.display='none'; });
 }
+
+// Tampil info sisa batch saat batch dipilih
+document.getElementById('pilihBatch').addEventListener('change', function () {
+    const opt    = this.options[this.selectedIndex];
+    const sisaInfo = document.getElementById('batchSisaInfo');
+    if (this.value && opt.dataset.sisa) {
+        document.getElementById('batchSisaVal').textContent    = opt.dataset.sisa;
+        document.getElementById('batchSisaSatuan').textContent = opt.dataset.satuan ?? '';
+        sisaInfo.style.display = 'block';
+        // Set max jumlah sesuai sisa batch
+        document.getElementById('inputJumlah').max = opt.dataset.sisa;
+    } else {
+        sisaInfo.style.display = 'none';
+        document.getElementById('inputJumlah').removeAttribute('max');
+    }
+});
+
 function toggleAlasanLain(sel) {
     const el = document.getElementById('alasanLain');
     if (sel.value === 'lain') { el.style.display='block'; el.required=true; }
     else { el.style.display='none'; el.required=false; }
 }
+
 @if($errors->any() || old('bahan_baku_id'))
-    document.addEventListener('DOMContentLoaded', () => { openModal('modalLimbah'); const s=document.getElementById('pilihBahan'); if(s.value) updateStokInfo(s); const a=document.getElementById('pilihAlasan'); if(a.value==='lain') toggleAlasanLain(a); });
+    document.addEventListener('DOMContentLoaded', () => {
+        openModal('modalLimbah');
+        const s = document.getElementById('pilihBahan');
+        if (s.value) loadBatch(s);
+        const a = document.getElementById('pilihAlasan');
+        if (a.value === 'lain') toggleAlasanLain(a);
+    });
 @endif
 </script>
 @endpush
